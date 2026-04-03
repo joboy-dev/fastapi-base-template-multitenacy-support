@@ -1,7 +1,22 @@
 #!/bin/bash
 
+# This script creates boilerplate files for a new API module.
+# Usage: ./create_api_module.sh <module_name>
+# Example: ./create_api_module.sh user
+
+set -e
+
 base_path="api/v1"
-file_name=$1  # e.g., "user"
+file_name="$1"  # e.g., "user"
+
+if [ -z "$file_name" ]; then
+    echo "❌ Please provide a file/module name as the first argument."
+    exit 1
+fi
+
+# Capitalize the first letter of the file_name for class names
+# Bash doesn't support ${var^} in all shells, so use awk:
+file_name_capitalized="$(echo "$file_name" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
 
 folders_to_update=("models" "routes" "schemas" "services")
 
@@ -20,7 +35,7 @@ do
     # Boilerplate per folder
     case $folder in
         "models")
-            cat <<EOF > $target_file
+            cat <<EOF > "$target_file"
 import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.orm import relationship, Session
@@ -28,51 +43,63 @@ from sqlalchemy.orm import relationship, Session
 from api.core.base.base_model import BaseTableModel
 
 
-class ${file_name^}(BaseTableModel):
+class ${file_name_capitalized}(BaseTableModel):
     __tablename__ = '${file_name}s'
 
 
 EOF
             ;;
         "routes")
-            cat <<EOF > $target_file
+            cat <<EOF > "$target_file"
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from slowapi.decorator import limiter
+# from slowapi.decorator import limiter
 
 from api.db.database import get_db
 from api.utils import paginator, helpers
 from api.utils.responses import success_response
 from api.utils.settings import settings
 from api.v1.models.user import User
-from api.v1.models.${file_name} import ${file_name^}
+from api.v1.models.${file_name} import ${file_name_capitalized}
 from api.v1.services.auth import AuthService
 from api.v1.schemas.auth import AuthenticatedEntity
-from api.v1.services.${file_name} import ${file_name^}Service
+from api.v1.services.${file_name} import ${file_name_capitalized}Service
+from api.v1.services.organization import OrganizationService
 from api.v1.schemas import ${file_name} as ${file_name}_schemas
 from api.utils.loggers import create_logger
 
 
-${file_name}_router = APIRouter(prefix='/${file_name}s', tags=['${file_name^}'])
+${file_name}_router = APIRouter(prefix='/${file_name}s', tags=['${file_name_capitalized}'])
 logger = create_logger(__name__)
 
 @${file_name}_router.post("", status_code=201, response_model=success_response)
 async def create_${file_name}(
-    payload: ${file_name}_schemas.${file_name^}Base,
+    payload: ${file_name}_schemas.${file_name_capitalized}Base,
+    organization_id: str,
     db: Session=Depends(get_db), 
     entity: AuthenticatedEntity=Depends(AuthService.get_current_user_entity)
 ):
     """Endpoint to create a new ${file_name}"""
 
-    ${file_name} = ${file_name^}.create(
+    # Check permission
+    AuthService.has_org_permission(
+        entity=entity,
+        organization_id=organization_id,
+        permission='${file_name}:create',
+        db=db
+    )
+
+    ${file_name} = ${file_name_capitalized}.create(
         db=db,
+        organization_id=organization_id,
+        unique_id=helpers.generate_unique_id(db=db, organization_id=organization_id),
         **payload.model_dump(exclude_unset=True)
     )
 
-    logger.info(f'${file_name^} with id {${file_name}.id} created')
+    logger.info(f'${file_name_capitalized} with id {${file_name}.id} created')
 
     return success_response(
-        message=f"${file_name^} created successfully",
+        message=f"${file_name_capitalized} created successfully",
         status_code=201,
         data=${file_name}.to_dict()
     )
@@ -80,6 +107,7 @@ async def create_${file_name}(
 
 @${file_name}_router.get("", status_code=200)
 async def get_${file_name}s(
+    organization_id: str,
     search: str = None,
     page: int = 1,
     per_page: int = 10,
@@ -90,7 +118,13 @@ async def get_${file_name}s(
 ):
     """Endpoint to get all ${file_name}s"""
 
-    query, ${file_name}s, count = ${file_name^}.fetch_by_field(
+    # Ensure user is a member of the organization
+    AuthService.belongs_to_organization(
+        db=db, entity=entity,
+        organization_id=organization_id
+    )
+
+    query, ${file_name}s, count = ${file_name_capitalized}.fetch_by_field(
         db, 
         sort_by=sort_by,
         order=order.lower(),
@@ -99,6 +133,7 @@ async def get_${file_name}s(
         search_fields={
             # 'email': search,
         },
+        organization_id=organization_id,
     )
     
     return paginator.build_paginated_response(
@@ -113,12 +148,19 @@ async def get_${file_name}s(
 @${file_name}_router.get("/{id}", status_code=200, response_model=success_response)
 async def get_${file_name}_by_id(
     id: str,
+    organization_id: str,
     db: Session=Depends(get_db), 
     entity: AuthenticatedEntity=Depends(AuthService.get_current_user_entity)
 ):
     """Endpoint to get a ${file_name} by ID or unique_id in case ID fails."""
 
-    ${file_name} = ${file_name^}.fetch_by_id(db, id)
+    # Ensure user is a member of the organization
+    AuthService.belongs_to_organization(
+        db=db, entity=entity,
+        organization_id=organization_id
+    )
+
+    ${file_name} = ${file_name_capitalized}.fetch_by_id(db, id)
     
     return success_response(
         message=f"Fetched ${file_name} successfully",
@@ -130,22 +172,31 @@ async def get_${file_name}_by_id(
 @${file_name}_router.patch("/{id}", status_code=200, response_model=success_response)
 async def update_${file_name}(
     id: str,
-    payload: ${file_name}_schemas.Update${file_name^},
+    payload: ${file_name}_schemas.Update${file_name_capitalized},
+    organization_id: str,
     db: Session=Depends(get_db), 
     entity: AuthenticatedEntity=Depends(AuthService.get_current_user_entity)
 ):
     """Endpoint to update a ${file_name}"""
 
-    ${file_name} = ${file_name^}.update(
+    # Check permission
+    AuthService.has_org_permission(
+        entity=entity,
+        organization_id=organization_id,
+        permission='${file_name}:update',
+        db=db
+    )
+
+    ${file_name} = ${file_name_capitalized}.update(
         db=db,
         id=id,
         **payload.model_dump(exclude_unset=True)
     )
 
-    logger.info(f'${file_name^} with id {${file_name}.id} updated')
+    logger.info(f'${file_name_capitalized} with id {${file_name}.id} updated')
 
     return success_response(
-        message=f"${file_name^} updated successfully",
+        message=f"${file_name_capitalized} updated successfully",
         status_code=200,
         data=${file_name}.to_dict()
     )
@@ -154,12 +205,21 @@ async def update_${file_name}(
 @${file_name}_router.delete("/{id}", status_code=200, response_model=success_response)
 async def delete_${file_name}(
     id: str,
+    organization_id: str,
     db: Session=Depends(get_db), 
     entity: AuthenticatedEntity=Depends(AuthService.get_current_user_entity)
 ):
     """Endpoint to delete a ${file_name}"""
 
-    ${file_name^}.soft_delete(db, id)
+    # Check permission
+    AuthService.has_org_permission(
+        entity=entity,
+        organization_id=organization_id,
+        permission='${file_name}:delete',
+        db=db
+    )
+
+    ${file_name_capitalized}.soft_delete(db, id)
 
     return success_response(
         message=f"Deleted successfully",
@@ -169,35 +229,35 @@ async def delete_${file_name}(
 EOF
             ;;
         "schemas")
-            cat <<EOF > $target_file
+            cat <<EOF > "$target_file"
 from pydantic import BaseModel
 from typing import Optional
 
 
-class ${file_name^}Base(BaseModel):
+class ${file_name_capitalized}Base(BaseModel):
 
-    unique_id: Optional[str] = None
+    pass
 
 
-class Update${file_name^}(BaseModel):
+class Update${file_name_capitalized}(BaseModel):
 
-    unique_id: Optional[str] = None
+    pass
 
 
 EOF
             ;;
         "services")
-            cat <<EOF > $target_file
+            cat <<EOF > "$target_file"
 from sqlalchemy.orm import Session
 
 from api.utils.loggers import create_logger
-from api.v1.models.${file_name} import ${file_name^}
+from api.v1.models.${file_name} import ${file_name_capitalized}
 from api.v1.schemas import ${file_name} as ${file_name}_schemas
 
 
 logger = create_logger(__name__)
 
-class ${file_name^}Service:
+class ${file_name_capitalized}Service:
 
     @classmethod
     def load_properties(cls, db: Session, ${file_name}s: List[${file_name^}]):
